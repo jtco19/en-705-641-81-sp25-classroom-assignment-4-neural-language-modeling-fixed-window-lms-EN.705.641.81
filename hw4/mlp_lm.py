@@ -56,6 +56,8 @@ def preprocess_data(data, local_window_size, splitter, tokenizer):
                 # TODO: Select a subset of token_ids from idx -> idx + local_window_size as input and put it to x
                 # Select a subset of token_ids from idx -> idx + local_window_size as input and put it to x: list of context token_ids
                 # Then select the word immediately after this window as output and put it to y: the target next token_id
+                x_data.append(token_ids[idx:idx + local_window_size])
+                y_data.append(token_ids[idx + local_window_size])
 
     # making tensors
     x_data = torch.LongTensor(x_data)
@@ -83,10 +85,17 @@ class NPLMFirstBlock(nn.Module):
         # Note this is done for a batch of instances.
 
         # Transform embeddings with a linear layer and tanh activation
+        embedded = self.embeddings(inputs)
+        batch_size = embedded.shape[0]
+        embedded = embedded.view(batch_size, -1)
+        final_embeds = self.linear(embedded)
+        final_embeds = torch.tanh(final_embeds)
 
         # apply layer normalization
+        final_embeds = self.layer_norm(final_embeds)
 
         # apply dropout
+        final_embeds = self.dropout(final_embeds)
         # your code ends here
 
         return final_embeds
@@ -104,12 +113,17 @@ class NPLMBlock(nn.Module):
     def forward(self, inputs):
         # TODO: implement the forward pass
         # apply linear transformation and tanh activation
+        x = self.linear(inputs)
+        x = torch.tanh(x)
 
         # add residual connection
+        x = x + inputs
 
         # apply layer normalization
+        x = self.layer_norm(x)
 
         # apply dropout
+        final_inputs = self.dropout(x)
 
         # your code ends here
 
@@ -125,9 +139,10 @@ class NPLMFinalBlock(nn.Module):
     def forward(self, inputs):
         # TODO: implement the forward pass
         # apply linear transformation
-
+        x = self.linear(inputs)
 
         # apply log_softmax to get log-probabilities (logits)
+        log_probs = torch.log_softmax(x, dim=-1)
 
         # your code ends here
 
@@ -143,6 +158,8 @@ class NPLM(nn.Module):
         self.intermediate_layers = nn.ModuleList()
 
         # TODO: create num_blocks of NPLMBlock as intermediate layers
+        for _ in range(num_blocks):
+            self.intermediate_layers.append(NPLMBlock(hidden_dim, dropout_p))
 
         # your code ends here
 
@@ -151,13 +168,18 @@ class NPLM(nn.Module):
     def forward(self, inputs):
         # TODO: implement the forward pass
         # input layer
+        x = self.first_layer(inputs)
 
 
         # multiple middle layers
         # remember to apply the ReLU activation function after each layer
+        for layer in self.intermediate_layers:
+            x = layer(x)
+            x = torch.relu(x)
 
 
         # output layer
+        log_probs = self.final_layer(x)
 
         # your code ends here
 
@@ -201,13 +223,17 @@ def train(model, train_dataloader, dev_dataloader, criterion, optimizer, schedul
             # compute loss function
             loss = criterion(log_probs, target)
 
-            # TODO extract perplexity
+            # TODO: extract perplexity
             # remember the connection between perplexity and cross-entropy loss
             # name the perplexity result as 'ppl'
+            ppl = torch.exp(loss)
 
 
             # backward pass and update gradient
-
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
 
             train_losses.append(loss.item())
             train_ppls.append(ppl.item())
@@ -250,6 +276,7 @@ def evaluate(model, eval_dataloader, criterion):
     avg_loss = loss / count
     # TODO: compute perplexity
     # name the perplexity result as 'avg_ppl'
+    avg_ppl = torch.exp(torch.tensor(avg_loss)).item()
 
     return avg_loss, avg_ppl
 
@@ -345,7 +372,7 @@ def sample_from_mlp_lm(config, dev_data):
     model = NPLM(tokenizer.vocab_size, config.embed_dim, config.local_window_size, config.hidden_dim, config.num_blocks,
                  config.dropout_p)
     print(f"{'-' * 10} Load Model Weights {'-' * 10}")
-    model.load_state_dict(torch.load(config.save_path))
+    model.load_state_dict(torch.load(config.save_path, map_location=torch.device('cpu')))
     model.eval()
 
     print(f"{'-' * 10} Evaluate on the Dev Set {'-' * 10}")
@@ -360,7 +387,7 @@ def sample_from_mlp_lm(config, dev_data):
 
     print(f"{'-' * 10} Sample From the Model {'-' * 10}")
     # greedy decoding
-    print(" {'-' * 10} greedy {'-' * 10}")
+    print(f"{'-' * 10} greedy {'-' * 10}")
     generate_text(prompt, model, tokenizer, config.local_window_size, top_p=None)
 
     # sampling with p=0.0; note this is equivalent to the greedy search
